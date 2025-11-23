@@ -3,36 +3,58 @@ import json
 import re
 
 # Configuration for Ollama
-# OLLAMA_URL = "http://host.docker.internal:11434/api/generate" # Use host.docker.internal if running backend in Docker
+# If running inside Docker, use "http://host.docker.internal:11434/api/generate"
+# If running Python locally (outside Docker), use "http://localhost:11434/api/generate"
+# OLLAMA_URL = "http://host.docker.internal:11434/api/generate" 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-# If running backend locally (not in Docker), use: "http://localhost:11434/api/generate"
 
-MODEL_NAME = "qwen2.5-coder:1.5b"
+MODEL_NAME = "qwen2.5-coder:3b"
 
 def generate_sql_from_query(user_query: str, schema_context: list):
     """
     Constructs the prompt and calls the local Qwen model.
+    Uses RAG (Retrieval Augmented Generation) by injecting the live DDL schema.
     """
     
-    # 1. Format the schema into a readable string for the LLM
-    schema_text = ""
+    # 1. RAG STEP: Transform JSON Schema into SQL DDL (Data Definition Language)
+    # This format gives the LLM the precise structure, types, and relationships (FKs)
+    # so it "knows" exactly what tables exist and how they connect.
+    schema_statements = []
     for table in schema_context:
-        columns = ", ".join([f"{c['name']} ({c['type']})" for c in table['columns']])
-        schema_text += f"Table: {table['name']}\nColumns: {columns}\n\n"
+        col_defs = []
+        for c in table['columns']:
+            # Construct column definition: "id INTEGER PRIMARY KEY"
+            col_def = f"{c['name']} {c['type']}"
+            if c['isPk']:
+                col_def += " PRIMARY KEY"
+            
+            # Include Foreign Key context if available
+            if c.get('fk'):
+                col_def += f" REFERENCES {c['fk']['table']}({c['fk']['col']})"
+            
+            col_defs.append(col_def)
+        
+        schema_statements.append(f"CREATE TABLE {table['name']} (\n    {', '.join(col_defs)}\n);")
+    
+    schema_text = "\n\n".join(schema_statements)
 
-    # 2. Strict Prompt Engineering for the 1.5B model
-    # Smaller models need very specific instructions to avoid chatting.
+    # 2. Strict Prompt Engineering
     system_prompt = f"""
     You are a PostgreSQL expert. Convert the user's natural language question into a valid SQL query.
     
-    Database Schema:
+    ### LIVE DATABASE SCHEMA (RAG CONTEXT) ###
+    The following tables currently exist in the database. You MUST ONLY use these tables:
+    
     {schema_text}
     
-    Rules:
-    1. Return ONLY the raw SQL. 
-    2. Do NOT use markdown code blocks (```sql). 
-    3. Do NOT add explanations.
-    4. Always end with a semicolon (;).
+    ### RULES ###
+    1. Return ONLY the raw SQL. No markdown, no explanations.
+    2. Always end with a semicolon (;).
+    3. CHECK EXISTENCE: 
+       - If the user asks to create a table that is listed in the schema above, use `CREATE TABLE IF NOT EXISTS` or handle gracefully.
+       - If the user asks to query a table NOT listed above, do not invent it.
+    4. DESTRUCTIVE ACTIONS: 
+       - If the user asks to DROP tables or DELETE data, ALWAYS append `CASCADE` (e.g., `DROP TABLE name CASCADE;`) to ensure execution despite foreign keys.
     5. Use valid PostgreSQL syntax.
     """
 
@@ -43,25 +65,21 @@ def generate_sql_from_query(user_query: str, schema_context: list):
         "prompt": full_prompt,
         "stream": False,
         "options": {
-            "temperature": 0.1, # Keep it deterministic
-            "num_predict": 150  # Short output (SQL is rarely long)
+            "temperature": 0.1, # Low temperature for factual accuracy based on retrieved context
+            "num_predict": 250 
         }
     }
 
     try:
-        # Note: If running backend in Docker, ensure Ollama allows external connections
-        # or use host networking. 
-        response = requests.post(OLLAMA_URL, json=payload, timeout=10)
+        # INCREASED TIMEOUT: RAG context makes generation slower.
+        # Increased from 10s to 90s to prevent "Read timed out" errors.
+        response = requests.post(OLLAMA_URL, json=payload, timeout=90)
         response.raise_for_status()
         
         result_json = response.json()
         raw_response = result_json.get("response", "").strip()
         
-        # 3. Clean the output (Post-processing)
-        # Sometimes models still wrap code in markdown despite instructions
-        clean_sql = clean_llm_response(raw_response)
-        
-        return clean_sql
+        return clean_llm_response(raw_response)
 
     except requests.exceptions.RequestException as e:
         print(f"LLM Connection Error: {e}")
@@ -69,9 +87,7 @@ def generate_sql_from_query(user_query: str, schema_context: list):
 
 def clean_llm_response(text):
     """Removes markdown backticks and extra whitespace."""
-    # Remove ```sql ... ``` or just ``` ... ```
     text = re.sub(r'```sql\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'```\s*', '', text)
-    # Remove leading/trailing whitespace
     text = text.strip()
     return text
