@@ -1,4 +1,6 @@
-fastapi[standard]
-psycopg
-python-dotenv==1.0.0
-pydantic==2.6.0
+fastapi
+uvicorn
+psycopg2-binary
+google-generativeai
+pydantic
+requests

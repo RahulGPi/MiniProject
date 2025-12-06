@@ -3,3 +3,5 @@ database_data
 __pycache__
 *.pyc
 _*
+v*
+Pg*

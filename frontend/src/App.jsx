@@ -3,11 +3,12 @@ import {
   Database, Plus, Trash2, Play, Terminal, Table as TableIcon, 
   RefreshCw, Cpu, AlertCircle, ChevronRight, ChevronDown, 
   LayoutGrid, MessageSquare, X, GripHorizontal, Link as LinkIcon,
-  ZoomIn, ZoomOut, Maximize, Move, Pencil, Check, Unlink, AlertTriangle
+  ZoomIn, ZoomOut, Maximize, Move, Pencil, Check, Unlink, AlertTriangle,
+  Mic // <--- ADDED IMPORT
 } from 'lucide-react';
 
 // --- API CONFIGURATION ---
-const API_BASE = 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 
 const api = {
   getSchema: async () => {
@@ -387,7 +388,7 @@ const CreateTableModal = ({ isOpen, onClose, onSubmit }) => {
         <form onSubmit={(e)=>{e.preventDefault(); if(tableName.trim()) onSubmit(tableName); setTableName('');}} className="p-6 space-y-4">
           <div className="space-y-2">
             <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Table Name</label>
-            <input autoFocus type="text" className="w-full bg-neutral-900/50 border border-white/20 p-3 text-sm text-white focus:border-white outline-none font-mono" placeholder="e.g. customer_orders" value={tableName} onChange={e=>setTableName(e.target.value)} />
+            <input autoFocus type="text" className="w-full bg-neutral-900/50 border border-white/20 p-3 text-sm text-white focus:border-white outline-none" placeholder="e.g. customer_orders" value={tableName} onChange={e=>setTableName(e.target.value)} />
           </div>
           <div className="flex gap-3 pt-2">
              <button type="button" onClick={onClose} className="flex-1 px-4 py-3 text-xs font-bold uppercase tracking-widest text-white border border-white/20 hover:bg-white/10">Cancel</button>
@@ -417,8 +418,24 @@ export default function App() {
   const [confirmState, setConfirmState] = useState({ isOpen: false, message: '', onConfirm: null });
   const [linkingState, setLinkingState] = useState(null);
   const [highlightedTableIds, setHighlightedTableIds] = useState([]); // TRACK HIGHLIGHTS
+  
+  // --- VOICE FEATURES ---
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef(null);
 
   const messagesEndRef = useRef(null);
+    useEffect(() => {
+    const resetDb = async () => {
+      try {
+        console.log("Wiping Database for new session...");
+        await fetch(`${API_BASE}/reset`, { method: 'POST' });
+        fetchSchema(); // Refresh UI after wipe
+      } catch (e) {
+        console.error("Failed to reset DB", e);
+      }
+    };
+    resetDb();
+  }, []); 
 
   useEffect(() => {
     const saved = localStorage.getItem('db_positions');
@@ -431,6 +448,45 @@ export default function App() {
       localStorage.setItem('db_positions', JSON.stringify(positions));
     }
   }, [positions]);
+
+  // VOICE TOGGLE HANDLER
+  const toggleListening = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      showError("Browser doesn't support Speech API");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onerror = (event) => {
+        console.error(event.error);
+        setIsListening(false);
+        if (event.error !== 'no-speech') {
+           showError(`Voice Error: ${event.error}`);
+        }
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      // Append text if input already exists, otherwise replace
+      setInput(prev => (prev ? prev + ' ' : '') + transcript);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
 
   const showError = (msg) => {
       setGlobalError(msg);
@@ -669,7 +725,16 @@ export default function App() {
                 <div className="p-6 border-t border-white/20 bg-black z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
                    <div className="relative group">
                      <Terminal className="absolute top-4 left-4 h-5 w-5 text-neutral-500" />
-                     <input type="text" className="block w-full pl-12 pr-14 py-4 bg-black border border-white/30 text-white focus:border-white outline-none font-mono text-sm" placeholder="QUERY DATABASE..." value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleChat()} />
+                     {/* VOICE BUTTON START */}
+                     <button 
+                       onClick={toggleListening}
+                       className={`absolute top-2 right-14 px-3 py-2 transition-colors ${isListening ? 'text-red-500 animate-pulse' : 'text-neutral-500 hover:text-white'}`}
+                       title="Toggle Voice Input"
+                     >
+                        <Mic className="w-4 h-4" />
+                     </button>
+                     {/* VOICE BUTTON END */}
+                     <input type="text" className="block w-full pl-12 pr-24 py-4 bg-black border border-white/30 text-white focus:border-white outline-none font-mono text-sm" placeholder="QUERY DATABASE..." value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleChat()} />
                      <button onClick={handleChat} disabled={isProcessing} className="absolute top-2 right-2 px-4 py-2 bg-white text-black flex items-center justify-center"><Play className="w-4 h-4 fill-current" /></button>
                    </div>
                 </div>

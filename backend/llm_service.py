@@ -1,36 +1,51 @@
-import requests
-import json
+import os
 import re
+import google.generativeai as genai
+from google.api_core import exceptions
 
-# Configuration for Ollama
-# If running inside Docker, use "http://host.docker.internal:11434/api/generate"
-# If running Python locally (outside Docker), use "http://localhost:11434/api/generate"
-OLLAMA_URL = "http://localhost:11434/api/generate"
+# Configuration for Google Gemini
+# Get your key from: https://aistudio.google.com/app/apikey
+API_KEY = "AIzaSyC2yE77RaXWvnMC7LXsE3oDaFyEMcipJ64"
 
-MODEL_NAME = "qwen2.5-coder:3b"
+# 'gemini-1.5-flash' is fast and excellent for logic/code (comparable/better than gpt-3.5)
+# 'gemini-1.5-pro' is better for very complex reasoning but slower/more expensive
+MODEL_NAME = "gemini-2.5-flash"
 
-def _send_to_ollama(prompt):
-    """Helper to send raw prompt to Ollama."""
-    payload = {
-        "model": MODEL_NAME,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": 0.1, 
-            "num_predict": 250 
-        }
-    }
+# Configure the SDK
+genai.configure(api_key=API_KEY)
+
+def _call_gemini(system_prompt, user_prompt):
+    """Helper to send structured messages to Gemini."""
     try:
-        # Timeout increased to 90s to handle larger RAG contexts
-        response = requests.post(OLLAMA_URL, json=payload, timeout=90)
-        response.raise_for_status()
-        return clean_llm_response(response.json().get("response", "").strip())
-    except requests.exceptions.RequestException as e:
-        print(f"LLM Connection Error: {e}")
-        return f"-- Error connecting to Local LLM: {str(e)}"
+        # We initialize the model inside the call to allow changing the system_instruction dynamically
+        model = genai.GenerativeModel(
+            model_name=MODEL_NAME,
+            system_instruction=system_prompt,
+            generation_config=genai.GenerationConfig(
+                temperature=0.1,  # Low temperature for deterministic SQL
+                max_output_tokens=500
+            )
+        )
+        
+        # Send the user query
+        response = model.generate_content(user_prompt)
+        
+        # Check if response was blocked (safety filters)
+        if not response.parts:
+            return "-- Error: Gemini blocked the response due to safety filters."
+
+        return clean_llm_response(response.text)
+    
+    except exceptions.GoogleAPIError as e:
+        print(f"Gemini API Error: {e}")
+        return f"-- Error connecting to Gemini: {str(e)}"
+    except Exception as e:
+        print(f"Unexpected Error: {e}")
+        return f"-- Error: {str(e)}"
 
 def clean_llm_response(text):
     """Removes markdown backticks and extra whitespace."""
+    # Gemini often uses ```sql ... ``` or just ``` ... ```
     text = re.sub(r'```sql\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'```\s*', '', text)
     return text.strip()
@@ -42,7 +57,7 @@ def _build_schema_context(schema_context):
         col_defs = []
         for c in table['columns']:
             col_def = f"{c['name']} {c['type']}"
-            if c['isPk']: col_def += " PRIMARY KEY"
+            if c.get('isPk'): col_def += " PRIMARY KEY"
             if c.get('fk'): col_def += f" REFERENCES {c['fk']['table']}({c['fk']['col']})"
             col_defs.append(col_def)
         schema_statements.append(f"CREATE TABLE {table['name']} (\n    {', '.join(col_defs)}\n);")
@@ -66,8 +81,7 @@ def generate_sql_from_query(user_query: str, schema_context: list):
     5. Use valid PostgreSQL syntax.
     """
     
-    full_prompt = f"{system_prompt}\n\nUser Question: {user_query}\nSQL:"
-    return _send_to_ollama(full_prompt)
+    return _call_gemini(system_prompt, user_query)
 
 def fix_generated_sql(user_query: str, failed_sql: str, error_msg: str, schema_context: list):
     """
@@ -81,6 +95,14 @@ def fix_generated_sql(user_query: str, failed_sql: str, error_msg: str, schema_c
     ### LIVE DATABASE SCHEMA ###
     {schema_text}
     
+    ### INSTRUCTIONS ###
+    1. Analyze the error message (e.g., syntax error, missing column, constraint violation).
+    2. Rewrite the SQL to fix the error.
+    3. If the error is about dependencies (DROP), ensure CASCADE is used.
+    4. Return ONLY the corrected SQL. No explanations.
+    """
+    
+    user_context = f"""
     ### ORIGINAL REQUEST ###
     User: "{user_query}"
     
@@ -89,16 +111,9 @@ def fix_generated_sql(user_query: str, failed_sql: str, error_msg: str, schema_c
     
     ### DATABASE ERROR ###
     Error: {error_msg}
-    
-    ### INSTRUCTIONS ###
-    1. Analyze the error message (e.g., syntax error, missing column, constraint violation).
-    2. Rewrite the SQL to fix the error.
-    3. If the error is about dependencies (DROP), ensure CASCADE is used.
-    4. Return ONLY the corrected SQL. No explanations.
     """
     
-    full_prompt = f"{system_prompt}\n\nCorrected SQL:"
     print(f"--- ATTEMPTING AUTO-REPAIR ---")
     print(f"Error: {error_msg}")
     
-    return _send_to_ollama(full_prompt)
+    return _call_gemini(system_prompt, user_context)
