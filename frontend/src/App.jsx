@@ -12,7 +12,7 @@ const API_BASE = import.meta.env.PROD ? '/api' : (import.meta.env.VITE_API_BASE 
 
 const api = {
   getSchema: async () => {
-    const res = await fetch(`${API_BASE}/schema`);
+    const res = await fetch(`${API_BASE}/schema`,mode = 'no-cors');
     if (!res.ok) throw new Error('Failed to fetch schema');
     return res.json();
   },
