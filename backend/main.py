@@ -7,20 +7,21 @@ from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
 
 # --- CONFIGURATION ---
+# Use the "Internal Database URL" from Render for best results
 DATABASE_URL = os.getenv("DATABASE_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Configure Gemini
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-2.0-flash')
 
 app = FastAPI()
 
-# Enable CORS
+# Enable CORS for your Frontend URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # Allow all for now to fix connection issues
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,37 +45,45 @@ class DDLRequest(BaseModel):
 # --- HELPER ---
 def get_db_connection():
     if not DATABASE_URL:
+        print("CRITICAL ERROR: DATABASE_URL is missing!")
         raise Exception("DATABASE_URL environment variable is not set")
-    return psycopg2.connect(DATABASE_URL)
+    try:
+        return psycopg2.connect(DATABASE_URL)
+    except Exception as e:
+        print(f"CRITICAL ERROR: Failed to connect to DB: {e}")
+        raise e
 
 # --- ROUTES ---
-@app.head("/")
+
 @app.get("/")
 def read_root():
-    """Fixes the 404 error when visiting the base URL."""
+    """Root endpoint to verify server is running."""
     return {"status": "Agentic DBMS Backend is Running", "docs_url": "/docs"}
 
 @app.post("/reset")
 def reset_database():
     """WIPES ALL DATA. Called by Frontend on startup."""
-    conn = get_db_connection()
-    cur = conn.cursor()
+    print("Received RESET request...")
     try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        # Drop public schema and recreate it to wipe everything clean
         cur.execute("DROP SCHEMA public CASCADE;")
         cur.execute("CREATE SCHEMA public;")
         cur.execute("GRANT ALL ON SCHEMA public TO postgres;")
         cur.execute("GRANT ALL ON SCHEMA public TO public;")
         conn.commit()
-        return {"status": "Database cleared"}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
         cur.close()
         conn.close()
+        print("Database reset successful.")
+        return {"status": "Database cleared"}
+    except Exception as e:
+        print(f"RESET ERROR: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/schema")
 def get_schema():
+    print("Received SCHEMA request...")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -86,6 +95,7 @@ def get_schema():
             WHERE table_schema = 'public'
         """)
         tables = [row[0] for row in cur.fetchall()]
+        print(f"DEBUG: Found tables: {tables}")
         
         schema = []
         for t in tables:
@@ -129,16 +139,19 @@ def get_schema():
         conn.close()
         return schema
     except Exception as e:
-        print(f"Error fetching schema: {e}")
+        print(f"SCHEMA ERROR: {e}")
+        # Return empty list instead of crashing, so frontend doesn't break
         return []
 
 @app.post("/ddl")
 def execute_ddl(req: DDLRequest):
+    print(f"Received DDL request: {req.action} on {req.table_name}")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         sql = ""
         
+        # Map actions to SQL
         if req.action == 'create_table':
             sql = f"CREATE TABLE {req.table_name} (id SERIAL PRIMARY KEY);"
         elif req.action == 'drop_table':
@@ -162,13 +175,15 @@ def execute_ddl(req: DDLRequest):
         conn.commit()
         cur.close()
         conn.close()
+        print("DDL Executed Successfully")
         return {"status": "success"}
     except Exception as e:
-        if 'conn' in locals() and conn: conn.rollback()
+        print(f"DDL ERROR: {e}")
         return {"detail": str(e)}, 400
 
 @app.post("/chat")
 def chat_agent(req: ChatRequest):
+    print(f"Received Chat: {req.message}")
     try:
         # 1. Get Schema Context
         current_schema = get_schema()
@@ -191,6 +206,7 @@ def chat_agent(req: ChatRequest):
         # 3. Call Gemini API
         response = model.generate_content(prompt)
         sql_query = response.text.replace('```sql', '').replace('```', '').strip()
+        print(f"Gemini Generated SQL: {sql_query}")
         
         # 4. Execute SQL
         conn = get_db_connection()
@@ -213,6 +229,7 @@ def chat_agent(req: ChatRequest):
         }
         
     except Exception as e:
+        print(f"CHAT ERROR: {e}")
         return {
             "response": f"Error executing query: {str(e)}",
             "sql": sql_query if 'sql_query' in locals() else "Generation Failed"
