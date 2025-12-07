@@ -48,7 +48,7 @@ def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 # --- ROUTES ---
-
+@app.head("/")
 @app.get("/")
 def read_root():
     """Fixes the 404 error when visiting the base URL."""
