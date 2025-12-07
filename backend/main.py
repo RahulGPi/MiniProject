@@ -8,12 +8,12 @@ import google.generativeai as genai
 
 # --- CONFIGURATION ---
 # Get these from Environment Variables in deployment
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/postgres")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://agentic_db_w48y_user:SgcDBvI7JXbpUWcFtMXrcW5w1RPwVt5n@dpg-d4q2iq95pdvs738gbt1g-a/agentic_db_w48y")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyC2yE77RaXWvnMC7LXsE3oDaFyEMcipJ64")
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 app = FastAPI()
 
