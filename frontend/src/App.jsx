@@ -2,9 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Database, Plus, Trash2, Play, Terminal, Table as TableIcon, 
   RefreshCw, Cpu, AlertCircle, ChevronRight, ChevronDown, 
-  LayoutGrid, MessageSquare, X, GripHorizontal, Link as LinkIcon,
-  ZoomIn, ZoomOut, Maximize, Move, Pencil, Check, Unlink, AlertTriangle,
-  Mic // <--- ADDED IMPORT
+  LayoutGrid, MessageSquare, X, GripHorizontal, Link as LinkIcon
 } from 'lucide-react';
 
 // --- API CONFIGURATION ---
@@ -41,42 +39,13 @@ const api = {
 };
 
 // --- CONSTANTS FOR LAYOUT ---
-const CARD_WIDTH = 288; 
-const HEADER_HEIGHT = 56; 
-const ROW_HEIGHT = 40; 
-const FOOTER_HEIGHT = 42; 
-
-const getCardHeight = (table) => {
-  const rowsHeight = table.columns.length * ROW_HEIGHT;
-  return HEADER_HEIGHT + rowsHeight + FOOTER_HEIGHT;
-};
+const CARD_WIDTH = 288; // w-72 = 18rem = 288px
+const HEADER_HEIGHT = 57; // Approximate header height with padding/border
+const ROW_HEIGHT = 40; // h-10 = 2.5rem = 40px
 
 // --- COMPONENTS ---
 
-// 1. Confirmation Modal
-const ConfirmModal = ({ isOpen, message, onConfirm, onCancel }) => {
-  if (!isOpen) return null;
-  
-  return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in duration-200">
-      <div className="bg-black border border-white/20 shadow-2xl w-full max-w-sm animate-in zoom-in-95 duration-200 border-t-4 border-t-white">
-        <div className="p-6 flex flex-col items-center text-center">
-           <div className="w-12 h-12 rounded-full bg-neutral-900 flex items-center justify-center mb-4 border border-white/10">
-             <AlertTriangle className="w-6 h-6 text-white" />
-           </div>
-           <h3 className="text-lg font-black text-white uppercase tracking-tighter mb-2">Confirm Action</h3>
-           <p className="text-neutral-400 text-sm mb-6 font-mono">{message}</p>
-           
-           <div className="flex gap-3 w-full">
-             <button onClick={onCancel} className="flex-1 px-4 py-3 text-xs font-bold uppercase tracking-widest text-white border border-white/20 hover:bg-white/10 transition-colors">Cancel</button>
-             <button onClick={onConfirm} className="flex-1 px-4 py-3 text-xs font-bold uppercase tracking-widest text-black bg-white hover:bg-neutral-200 transition-colors">Confirm</button>
-           </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
+// 1. Sidebar (Explorer)
 const TableExplorer = ({ schema, onRefresh }) => {
   const [expandedTables, setExpandedTables] = useState({});
   const toggleTable = (tableName) => {
@@ -93,7 +62,10 @@ const TableExplorer = ({ schema, onRefresh }) => {
         <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-2 px-2 mt-2">Tables</div>
         {schema.map(table => (
           <div key={table.id} className="mb-1">
-            <button onClick={() => toggleTable(table.name)} className="w-full flex items-center gap-2 px-2 py-1.5 text-neutral-400 hover:bg-white/10 hover:text-white rounded-sm text-xs transition-colors group">
+            <button 
+              onClick={() => toggleTable(table.name)}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-neutral-400 hover:bg-white/10 hover:text-white rounded-sm text-xs transition-colors group"
+            >
               {expandedTables[table.name] ? <ChevronDown className="w-3 h-3 text-white" /> : <ChevronRight className="w-3 h-3 text-neutral-600 group-hover:text-white" />}
               <TableIcon className="w-3 h-3" />
               <span className="truncate font-medium">{table.name}</span>
@@ -104,7 +76,7 @@ const TableExplorer = ({ schema, onRefresh }) => {
                   <div key={idx} className="flex items-center gap-2 text-[10px] text-neutral-500 py-0.5 font-mono">
                     <div className={`w-1 h-1 rounded-full ${col.isPk ? 'bg-white' : 'bg-neutral-800'}`}></div>
                     <span className="truncate">{col.name}</span>
-                    {col.fk && <LinkIcon className="w-2 h-2 text-neutral-600" />}
+                    {col.fk && <LinkIcon className="w-2 h-2 text-cyan-500" />}
                   </div>
                 ))}
               </div>
@@ -121,168 +93,103 @@ const TableExplorer = ({ schema, onRefresh }) => {
   );
 };
 
-const SchemaNode = ({ 
-    table, position, zoom, 
-    onMove, onRefresh, onError, 
-    onStartLinking, linkingState,
-    requestConfirm, isHighlighted
-}) => {
-  const [isAddingCol, setIsAddingCol] = useState(false);
+// 2. Draggable Schema Node
+const SchemaNode = ({ table, position, onMove, onRefresh, onError }) => {
+  const [isEditing, setIsEditing] = useState(false);
   const [newColName, setNewColName] = useState('');
   const [newColType, setNewColType] = useState('VARCHAR(255)');
   const [isBusy, setIsBusy] = useState(false);
   
-  const [editingTableName, setEditingTableName] = useState(false);
-  const [tempTableName, setTempTableName] = useState(table.name);
-  const [editingCol, setEditingCol] = useState(null); 
-  const [tempColName, setTempColName] = useState('');
-  const [tempColType, setTempColType] = useState('');
-
-  const stopProp = (e) => e.stopPropagation();
-
+  const nodeRef = useRef(null);
+  
   const handleMouseDown = (e) => {
+    if (e.target.closest('button') || e.target.closest('input') || e.target.closest('select')) return;
+    
     e.preventDefault();
-    e.stopPropagation(); 
-    const startMouseX = e.clientX;
-    const startMouseY = e.clientY;
-    const startNodeX = position.x;
-    const startNodeY = position.y;
-    
+    const startX = e.clientX - position.x;
+    const startY = e.clientY - position.y;
+
     const handleMouseMove = (moveEvent) => {
-      const deltaX = (moveEvent.clientX - startMouseX) / zoom;
-      const deltaY = (moveEvent.clientY - startMouseY) / zoom;
-      onMove(table.id, { x: startNodeX + deltaX, y: startNodeY + deltaY });
+      onMove(table.id, {
+        x: moveEvent.clientX - startX,
+        y: moveEvent.clientY - startY
+      });
     };
-    
+
     const handleMouseUp = () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-    
+
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-  };
-
-  const handleRenameTable = async () => {
-    if (!tempTableName || tempTableName === table.name) { setEditingTableName(false); return; }
-    setIsBusy(true);
-    try { await api.sendDDL({ action: 'rename_table', table_name: table.name, new_table_name: tempTableName }); onRefresh(); } 
-    catch(e) { onError(e.message); } finally { setIsBusy(false); setEditingTableName(false); }
   };
 
   const handleAddColumn = async () => {
     if (!newColName) return;
     setIsBusy(true);
-    try { await api.sendDDL({ action: 'add_column', table_name: table.name, column_name: newColName, column_type: newColType }); setNewColName(''); setIsAddingCol(false); onRefresh(); } 
+    try {
+      await api.sendDDL({ action: 'add_column', table_name: table.name, column_name: newColName, column_type: newColType });
+      setNewColName(''); setIsEditing(false); onRefresh(); 
+    } catch (e) { onError(e.message); } finally { setIsBusy(false); }
+  };
+
+  const handleDeleteTable = async () => {
+    if(!window.confirm(`Delete table ${table.name}?`)) return;
+    setIsBusy(true);
+    try { await api.sendDDL({ action: 'drop_table', table_name: table.name }); onRefresh(); } 
     catch (e) { onError(e.message); } finally { setIsBusy(false); }
   };
 
-  const handleDeleteTable = () => {
-    requestConfirm(`Delete table '${table.name}'?`, async () => {
-        setIsBusy(true);
-        try { await api.sendDDL({ action: 'drop_table', table_name: table.name }); onRefresh(); } 
-        catch (e) { onError(e.message); } finally { setIsBusy(false); }
-    });
-  };
-
-  const handleDeleteColumn = (colName) => {
-    requestConfirm(`Delete column '${colName}'?`, async () => {
-        setIsBusy(true);
-        try { await api.sendDDL({ action: 'drop_column', table_name: table.name, column_name: colName }); onRefresh(); } 
-        catch (e) { onError(e.message); } finally { setIsBusy(false); }
-    });
-  };
-
-  const handleSaveColumnEdit = async (originalCol) => {
-      if (tempColName !== originalCol.name) {
-          try { await api.sendDDL({ action: 'rename_column', table_name: table.name, column_name: originalCol.name, new_column_name: tempColName }); } catch (e) { onError(e.message); return; }
-      }
-      if (tempColType !== originalCol.type) {
-          try { await api.sendDDL({ action: 'alter_column_type', table_name: table.name, column_name: tempColName, column_type: tempColType }); } catch (e) { onError(e.message); return; }
-      }
-      setEditingCol(null); onRefresh();
-  };
-
-  const startEditingCol = (col) => { setEditingCol(col.name); setTempColName(col.name); setTempColType(col.type); };
-
   return (
     <div 
-      onMouseDown={stopProp} 
-      style={{ transform: `translate(${position.x}px, ${position.y}px)`, position: 'absolute', width: CARD_WIDTH, height: getCardHeight(table) }}
-      className={`
-        flex flex-col shadow-2xl z-10 transition-all duration-300
-        ${isBusy ? 'border-white animate-pulse' : 'border-white/20'}
-        ${isHighlighted ? 'border-2 border-white shadow-[0_0_20px_rgba(255,255,255,0.3)] bg-neutral-900' : 'bg-black border hover:shadow-white/5'}
-      `}
+      ref={nodeRef}
+      style={{ transform: `translate(${position.x}px, ${position.y}px)`, position: 'absolute', width: CARD_WIDTH }}
+      className={`bg-black border ${isBusy ? 'border-white animate-pulse' : 'border-white/20'} flex flex-col shadow-2xl shadow-black/80 z-10`}
     >
-      {/* Header */}
-      <div className={`p-3 border-b flex justify-between items-center group h-[56px] ${isHighlighted ? 'bg-white/10 border-white/30' : 'bg-neutral-900/80 border-white/10'}`}>
-        <div className="flex items-center gap-2 flex-1">
-          <div onMouseDown={handleMouseDown} className="cursor-grab active:cursor-grabbing p-1 hover:bg-white/10 rounded transition-colors" title="Drag to move">
-            <GripHorizontal className={`w-4 h-4 ${isHighlighted ? 'text-white' : 'text-neutral-600 group-hover:text-white'}`} />
-          </div>
-          {editingTableName ? (
-              <div className="flex items-center gap-1 w-full mr-2">
-                  <input className="bg-black border border-white/20 text-white text-xs px-1 py-0.5 w-full font-mono focus:border-white outline-none" value={tempTableName} onChange={(e) => setTempTableName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleRenameTable()} autoFocus />
-                  <button onClick={handleRenameTable} className="text-green-500 hover:text-green-400"><Check className="w-3 h-3"/></button>
-                  <button onClick={() => setEditingTableName(false)} className="text-red-500 hover:text-red-400"><X className="w-3 h-3"/></button>
-              </div>
-          ) : (
-              <div className="flex items-center gap-2 group/title w-full">
-                  <span className="font-bold text-white font-mono tracking-tight truncate cursor-text select-text" title={table.name}>{table.name}</span>
-                  <button onClick={() => { setEditingTableName(true); setTempTableName(table.name); }} className="opacity-0 group-hover/title:opacity-100 text-neutral-500 hover:text-white transition-opacity"><Pencil className="w-3 h-3" /></button>
-              </div>
-          )}
+      <div 
+        onMouseDown={handleMouseDown}
+        className="bg-neutral-900/80 p-3 border-b border-white/10 flex justify-between items-center cursor-grab active:cursor-grabbing select-none group h-[56px]"
+      >
+        <div className="flex items-center gap-2">
+          <GripHorizontal className="w-4 h-4 text-neutral-600 group-hover:text-white transition-colors" />
+          <span className="font-bold text-white font-mono tracking-tight">{table.name}</span>
         </div>
-        <button onClick={handleDeleteTable} className="text-neutral-600 hover:text-white transition-colors shrink-0 ml-2"><Trash2 className="w-4 h-4" /></button>
+        <button onClick={handleDeleteTable} className="text-neutral-600 hover:text-white transition-colors">
+          <Trash2 className="w-4 h-4" />
+        </button>
       </div>
       
-      <div className="bg-black/90 backdrop-blur flex-1">
+      {/* Columns Container */}
+      <div className="bg-black/90 backdrop-blur">
         {table.columns.map((col, idx) => (
           <div key={idx} className="flex justify-between items-center px-3 hover:bg-white/10 group text-sm border-b border-white/5 transition-colors h-10">
-            {editingCol === col.name ? (
-                <div className="flex items-center gap-1 w-full">
-                    <input className="bg-black border border-white/20 text-white text-[10px] px-1 py-0.5 w-24 font-mono focus:border-white outline-none" value={tempColName} onChange={(e) => setTempColName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSaveColumnEdit(col)} />
-                    <select className="bg-black border border-white/20 text-white text-[10px] w-20 outline-none" value={tempColType} onChange={(e) => setTempColType(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSaveColumnEdit(col)}>
-                        <option value="VARCHAR(255)">VARCHAR</option><option value="INTEGER">INT</option><option value="BOOLEAN">BOOL</option><option value="TIMESTAMP">TIME</option><option value="DECIMAL(10,2)">DECIMAL</option>
-                    </select>
-                    <button onClick={() => handleSaveColumnEdit(col)} className="text-green-500 ml-auto"><Check className="w-3 h-3"/></button>
-                    <button onClick={() => setEditingCol(null)} className="text-red-500"><X className="w-3 h-3"/></button>
-                </div>
-            ) : (
-                <>
-                    <div className="flex items-center gap-2 overflow-hidden w-full">
-                        {col.isPk && <div className="text-[8px] font-bold bg-white text-black px-1 rounded-[2px] shrink-0">PK</div>}
-                        {col.fk && <LinkIcon className={`w-3 h-3 shrink-0 ${table.name === col.fk.table ? 'text-emerald-400' : 'text-cyan-400'}`} />}
-                        <span className={`font-mono text-xs truncate ${col.fk ? (table.name === col.fk.table ? 'text-emerald-200' : 'text-cyan-100') : 'text-neutral-300'}`}>{col.name}</span>
-                        <div className="flex items-center gap-2 ml-auto">
-                            <button onClick={() => onStartLinking(table.name, col.name)} className={`p-1 rounded hover:bg-white/10 transition-colors ${linkingState?.sourceCol === col.name && linkingState?.sourceTable === table.name ? 'text-cyan-400 animate-pulse bg-cyan-900/30' : 'text-neutral-600 hover:text-cyan-400'}`} title="Link">
-                                <LinkIcon className="w-3 h-3" />
-                            </button>
-                            <button onClick={() => startEditingCol(col)} className="p-1 rounded hover:bg-white/10 text-neutral-600 hover:text-white"><Pencil className="w-3 h-3" /></button>
-                            <button onClick={() => handleDeleteColumn(col.name)} className="p-1 rounded hover:bg-white/10 text-neutral-600 hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
-                        </div>
-                    </div>
-                    <span className="text-neutral-600 text-[9px] uppercase font-bold tracking-wider shrink-0 ml-2 w-12 text-right">{col.type}</span>
-                </>
-            )}
+            <div className="flex items-center gap-2 overflow-hidden w-full">
+              {col.isPk && <div className="text-[8px] font-bold bg-white text-black px-1 rounded-[2px] shrink-0">PK</div>}
+              {col.fk && <LinkIcon className="w-3 h-3 text-cyan-400 shrink-0" />}
+              <span className={`font-mono text-xs truncate ${col.fk ? 'text-cyan-100' : 'text-neutral-300'}`}>{col.name}</span>
+            </div>
+            <span className="text-neutral-600 text-[9px] uppercase font-bold tracking-wider shrink-0 ml-2">{col.type}</span>
           </div>
         ))}
       </div>
 
-      {isAddingCol ? (
+      {isEditing ? (
         <div className="p-3 border-t border-white/10 space-y-2 bg-neutral-900/50">
-          <input className="w-full bg-black border border-white/20 p-2 text-xs text-white focus:border-white outline-none font-mono" placeholder="col_name" value={newColName} onChange={e=>setNewColName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddColumn()} autoFocus />
-          <select className="w-full bg-black border border-white/20 p-2 text-xs text-white outline-none font-mono" value={newColType} onChange={e=>setNewColType(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddColumn()}>
-            <option value="VARCHAR(255)">VARCHAR</option><option value="INTEGER">INTEGER</option><option value="BOOLEAN">BOOLEAN</option><option value="TIMESTAMP">TIMESTAMP</option>
+          <input className="w-full bg-black border border-white/20 p-2 text-xs text-white focus:border-white outline-none font-mono" placeholder="col_name" value={newColName} onChange={e=>setNewColName(e.target.value)} autoFocus />
+          <select className="w-full bg-black border border-white/20 p-2 text-xs text-white outline-none font-mono" value={newColType} onChange={e=>setNewColType(e.target.value)}>
+            <option value="VARCHAR(255)">VARCHAR</option>
+            <option value="INTEGER">INTEGER</option>
+            <option value="BOOLEAN">BOOLEAN</option>
+            <option value="TIMESTAMP">TIMESTAMP</option>
           </select>
           <div className="flex gap-2">
             <button onClick={handleAddColumn} className="flex-1 bg-white hover:bg-neutral-200 text-black text-xs font-bold py-1.5 uppercase">Save</button>
-            <button onClick={()=>setIsAddingCol(false)} className="flex-1 border border-white/20 text-white text-xs py-1.5 uppercase">Cancel</button>
+            <button onClick={()=>setIsEditing(false)} className="flex-1 border border-white/20 text-white text-xs py-1.5 uppercase">Cancel</button>
           </div>
         </div>
       ) : (
-        <button onClick={()=>setIsAddingCol(true)} className="p-2 border-t border-white/10 text-neutral-500 text-xs hover:text-white hover:bg-white/5 transition-colors flex justify-center items-center gap-2 uppercase tracking-widest font-bold h-[42px]">
+        <button onClick={()=>setIsEditing(true)} className="p-2 border-t border-white/10 text-neutral-500 text-xs hover:text-white hover:bg-white/5 transition-colors flex justify-center items-center gap-2 uppercase tracking-widest font-bold h-10">
           <Plus className="w-3 h-3" /> Add Column
         </button>
       )}
@@ -290,84 +197,82 @@ const SchemaNode = ({
   );
 };
 
-const ConnectionsLayer = ({ schema, positions, requestConfirm, onDeleteConnection, onConnectionClick }) => {
-  const handleDeleteClick = (tableName, constraintName) => {
-      requestConfirm(`Remove relationship? This drops constraint '${constraintName}'.`, () => {
-          onDeleteConnection(tableName, constraintName);
-      });
-  };
-
+// 3. SVG Connection Layer - UPDATED FOR PRECISION AND VISIBILITY
+const ConnectionsLayer = ({ schema, positions }) => {
   return (
     <svg className="absolute inset-0 w-full h-full pointer-events-none z-0 overflow-visible">
       <defs>
+        {/* High visibility marker */}
         <marker id="arrowhead-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
           <polygon points="0 0, 10 3.5, 0 7" fill="#06b6d4" />
         </marker>
-        <marker id="arrowhead-emerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-          <polygon points="0 0, 10 3.5, 0 7" fill="#34d399" />
-        </marker>
+        {/* Glow effect */}
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+          <feMerge>
+            <feMergeNode in="coloredBlur"/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
       </defs>
+      
       {schema.map(table => 
         table.columns.filter(col => col.fk).map((col, idx) => {
           const startPos = positions[table.id];
           const targetTable = schema.find(t => t.name === col.fk.table);
-          if (!targetTable || !startPos || !positions[targetTable.id]) return null;
+          if (!targetTable) return null;
           
           const endPos = positions[targetTable.id];
+          if (!startPos || !endPos) return null;
+
+          // Find the index of the column to calculate precise Y-offset
           const sourceColIndex = table.columns.findIndex(c => c.name === col.name);
           const targetColIndex = targetTable.columns.findIndex(c => c.name === col.fk.col);
 
+          // Calculate precise Y coordinates based on fixed row heights
+          // Y = Card Y + Header Height + (Row Index * Row Height) + (Row Height / 2 for center)
           const startY = startPos.y + HEADER_HEIGHT + (sourceColIndex * ROW_HEIGHT) + (ROW_HEIGHT / 2);
           const endY = endPos.y + HEADER_HEIGHT + (targetColIndex !== -1 ? targetColIndex : 0) * ROW_HEIGHT + (ROW_HEIGHT / 2);
-          
-          const isSourceLeft = startPos.x < endPos.x;
-          const isSelfLink = table.name === col.fk.table;
-          
-          const linkColor = isSelfLink ? "#34d399" : "#06b6d4";
-          const markerId = isSelfLink ? "url(#arrowhead-emerald)" : "url(#arrowhead-cyan)";
 
-          let startX, endX;
-          let controlStartX, controlEndX;
-          
-          if (isSourceLeft) {
-              startX = startPos.x + CARD_WIDTH;
-              endX = endPos.x;
-              const dist = Math.abs(endX - startX);
-              const controlOffset = Math.max(dist * 0.5, 50);
-              controlStartX = startX + controlOffset;
-              controlEndX = endX - controlOffset;
-          } else {
-              startX = startPos.x;
-              endX = endPos.x + CARD_WIDTH;
-              const dist = Math.abs(startX - endX);
-              const controlOffset = Math.max(dist * 0.5, 50);
-              controlStartX = startX - controlOffset;
-              controlEndX = endX + controlOffset;
-          }
+          // Calculate X coordinates
+          // Start from Right edge of Source, End at Left edge of Target
+          const startX = startPos.x + CARD_WIDTH;
+          const endX = endPos.x;
 
-          const pathData = `M ${startX} ${startY} C ${controlStartX} ${startY}, ${controlEndX} ${endY}, ${endX} ${endY}`;
-          const midX = (startX + endX) / 2;
-          const midY = (startY + endY) / 2; 
+          // Curve logic
+          const dist = Math.abs(endX - startX);
+          const controlOffset = Math.max(dist * 0.5, 50); // Minimum curve
+          
+          const pathData = `
+            M ${startX} ${startY} 
+            C ${startX + controlOffset} ${startY}, 
+              ${endX - controlOffset} ${endY}, 
+              ${endX} ${endY}
+          `;
 
           return (
-            <g 
-                key={`${table.id}-${col.name}-${idx}`} 
-                className="group pointer-events-auto cursor-pointer"
-                onClick={(e) => {
-                    e.stopPropagation(); // Prevent clearing selection on canvas
-                    onConnectionClick(table.id, targetTable.id);
-                }}
-            >
-              <path d={pathData} stroke={linkColor} strokeWidth="12" fill="none" opacity="0" className="hover:opacity-10 transition-opacity" />
-              <path d={pathData} stroke={linkColor} strokeWidth="2" fill="none" markerEnd={markerId} />
-              <circle cx={startX} cy={startY} r="4" fill={linkColor} stroke="#000" strokeWidth="1" />
-              <circle cx={endX} cy={endY} r="4" fill={linkColor} stroke="#000" strokeWidth="1" />
-              
-              <foreignObject x={midX - 12} y={midY - 12} width="24" height="24" className="opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button onMouseDown={(e) => e.stopPropagation()} onClick={() => handleDeleteClick(table.name, col.fk.constraint)} className="w-6 h-6 bg-red-600 rounded-full flex items-center justify-center text-white hover:bg-red-500 shadow-lg cursor-pointer border border-black" title="Delete">
-                      <Unlink className="w-3 h-3" />
-                  </button>
-              </foreignObject>
+            <g key={`${table.id}-${col.name}-${idx}`} className="transition-opacity duration-300">
+              {/* Outer Glow Stroke */}
+              <path 
+                d={pathData} 
+                stroke="#06b6d4" 
+                strokeWidth="4" 
+                fill="none" 
+                opacity="0.2"
+                filter="url(#glow)"
+              />
+              {/* Main Line */}
+              <path 
+                d={pathData} 
+                stroke="#06b6d4" // Cyan 500
+                strokeWidth="2" 
+                fill="none" 
+                markerEnd="url(#arrowhead-cyan)" 
+              />
+              {/* Start Anchor */}
+              <circle cx={startX} cy={startY} r="4" fill="#06b6d4" stroke="#000" strokeWidth="1" />
+              {/* End Anchor */}
+              <circle cx={endX} cy={endY} r="4" fill="#06b6d4" stroke="#000" strokeWidth="1" />
             </g>
           );
         })
@@ -376,11 +281,12 @@ const ConnectionsLayer = ({ schema, positions, requestConfirm, onDeleteConnectio
   );
 };
 
+// 4. Modal (Create Table)
 const CreateTableModal = ({ isOpen, onClose, onSubmit }) => {
   const [tableName, setTableName] = useState('');
   if (!isOpen) return null;
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-black border border-white/20 shadow-2xl w-full max-w-md animate-in zoom-in-95">
         <div className="p-4 border-b border-white/10 flex justify-between items-center bg-neutral-900/50">
            <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2"><TableIcon className="w-4 h-4" /> New Entity</h3>
@@ -407,23 +313,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('schema'); 
   const [schema, setSchema] = useState([]);
   const [positions, setPositions] = useState({});
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const containerRef = useRef(null);
   const [messages, setMessages] = useState([{ id: 1, role: 'system', content: 'SYSTEM READY. WAITING FOR INPUT.' }]);
   const [input, setInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [globalError, setGlobalError] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [confirmState, setConfirmState] = useState({ isOpen: false, message: '', onConfirm: null });
-  const [linkingState, setLinkingState] = useState(null);
-  const [highlightedTableIds, setHighlightedTableIds] = useState([]); // TRACK HIGHLIGHTS
-  
-  // --- VOICE FEATURES ---
-  const [isListening, setIsListening] = useState(false);
-  const recognitionRef = useRef(null);
-
   const messagesEndRef = useRef(null);
     useEffect(() => {
     const resetDb = async () => {
@@ -450,187 +344,35 @@ export default function App() {
     }
   }, [positions]);
 
-  // VOICE TOGGLE HANDLER
-  const toggleListening = () => {
-    if (isListening) {
-      recognitionRef.current?.stop();
-      setIsListening(false);
-      return;
-    }
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      showError("Browser doesn't support Speech API");
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = 'en-US';
-
-    recognition.onstart = () => setIsListening(true);
-    recognition.onend = () => setIsListening(false);
-    recognition.onerror = (event) => {
-        console.error(event.error);
-        setIsListening(false);
-        if (event.error !== 'no-speech') {
-           showError(`Voice Error: ${event.error}`);
-        }
-    };
-
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      // Append text if input already exists, otherwise replace
-      setInput(prev => (prev ? prev + ' ' : '') + transcript);
-    };
-
-    recognitionRef.current = recognition;
-    recognition.start();
-  };
-
-  const showError = (msg) => {
-      setGlobalError(msg);
-      setTimeout(() => { setGlobalError(prev => (prev === msg ? null : prev)); }, 15000);
-  };
-
   const fetchSchema = async () => {
     try {
       const data = await api.getSchema();
       setSchema(data);
       setGlobalError(null);
+      
       setPositions(prev => {
         const newPositions = { ...prev };
-        let placedCount = Object.keys(prev).length; 
-        if (Object.keys(prev).length === 0) placedCount = 0;
-        data.forEach((table) => {
+        data.forEach((table, index) => {
           if (!newPositions[table.id]) {
-            const COLUMNS = 4; 
-            const col = placedCount % COLUMNS;
-            const row = Math.floor(placedCount / COLUMNS);
-            newPositions[table.id] = { x: 50 + (col * 320), y: 50 + (row * 300) };
-            placedCount++;
+            newPositions[table.id] = { x: 50 + (index * 40), y: 50 + (index * 40) };
           }
         });
         return newPositions;
       });
-    } catch (e) { showError(`CONNECTION ERROR: ${e.message}`); }
-  };
-
-  const requestConfirm = (message, onConfirmAction) => {
-      setConfirmState({ isOpen: true, message, onConfirm: () => { onConfirmAction(); setConfirmState({ isOpen: false, message: '', onConfirm: null }); } });
-  };
-
-  const handleStartLinking = (table, col) => {
-      if (linkingState) {
-          if (linkingState.sourceTable === table && linkingState.sourceCol === col) { setLinkingState(null); } 
-          else { handleCreateConnection(linkingState.sourceTable, linkingState.sourceCol, table, col); setLinkingState(null); }
-      } else { setLinkingState({ sourceTable: table, sourceCol: col }); }
-  };
-
-  const handleCreateConnection = (sourceTable, sourceCol, targetTable, targetCol) => {
-      requestConfirm(`Link ${sourceTable}.${sourceCol} -> ${targetTable}.${targetCol}?`, async () => {
-          try { await api.sendDDL({ action: 'add_foreign_key', table_name: sourceTable, column_name: sourceCol, fk_table: targetTable, fk_column: targetCol }); fetchSchema(); } 
-          catch(e) { showError(`LINK FAILED: ${e.message} (Check data types match!)`); }
-      });
-  };
-
-  const handleDeleteConnection = async (tableName, constraintName) => {
-      try { await api.sendDDL({ action: 'drop_foreign_key', table_name: tableName, constraint_name: constraintName }); fetchSchema(); } catch(e) { showError(e.message); }
-  };
-
-  const handleConnectionClick = (sourceId, targetId) => {
-      setHighlightedTableIds([sourceId, targetId]);
-  };
-
-  const handleWheel = (e) => {
-    if (activeTab !== 'schema') return;
-    e.preventDefault();
-    const scaleAmount = -e.deltaY * 0.001;
-    const newZoom = Math.min(Math.max(zoom + scaleAmount, 0.1), 2);
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-    const worldX = (mouseX - pan.x) / zoom;
-    const worldY = (mouseY - pan.y) / zoom;
-    const newPanX = mouseX - (worldX * newZoom);
-    const newPanY = mouseY - (worldY * newZoom);
-    setZoom(newZoom); setPan({ x: newPanX, y: newPanY });
-  };
-
-  const handleCanvasMouseDown = (e) => {
-    if (activeTab !== 'schema') return;
-    setLinkingState(null);
-    setHighlightedTableIds([]); // Clear highlights on canvas click
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const startPanX = pan.x;
-    const startPanY = pan.y;
-    setIsPanning(true);
-    const onMouseMove = (moveEvent) => {
-      const dx = moveEvent.clientX - startX;
-      const dy = moveEvent.clientY - startY;
-      setPan({ x: startPanX + dx, y: startPanY + dy });
-    };
-    const onMouseUp = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      setIsPanning(false);
-    };
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  };
-
-  const checkCollision = (id, newX, newY) => {
-    const movingTable = schema.find(t => t.id === id);
-    if (!movingTable) return false;
-    const movingRect = { x: newX, y: newY, w: CARD_WIDTH, h: getCardHeight(movingTable) };
-    for (const table of schema) {
-      if (table.id === id) continue;
-      const pos = positions[table.id];
-      if (!pos) continue;
-      const otherRect = { x: pos.x, y: pos.y, w: CARD_WIDTH, h: getCardHeight(table) };
-      const margin = 10; 
-      const isOverlapping = movingRect.x < otherRect.x + otherRect.w + margin && movingRect.x + movingRect.w + margin > otherRect.x && movingRect.y < otherRect.y + otherRect.h + margin && movingRect.y + movingRect.h + margin > otherRect.y;
-      if (isOverlapping) return true; 
+    } catch (e) {
+      setGlobalError(`CONNECTION ERROR: ${e.message}`);
     }
-    return false;
   };
 
   const handleMoveNode = (id, newPos) => {
-    if (!checkCollision(id, newPos.x, newPos.y)) { setPositions(prev => ({ ...prev, [id]: newPos })); }
-  };
-
-  const handleFitToScreen = () => {
-    if (!containerRef.current || schema.length === 0) { setZoom(1); setPan({x: 0, y: 0}); return; }
-    const containerW = containerRef.current.clientWidth;
-    const containerH = containerRef.current.clientHeight;
-    const PADDING = 50;
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    schema.forEach(table => {
-      const pos = positions[table.id];
-      if (pos) {
-        const h = getCardHeight(table);
-        minX = Math.min(minX, pos.x); maxX = Math.max(maxX, pos.x + CARD_WIDTH);
-        minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y + h);
-      }
-    });
-    if (minX === Infinity) { setZoom(1); setPan({x: 0, y: 0}); return; }
-    const contentW = maxX - minX;
-    const contentH = maxY - minY;
-    const scaleX = (containerW - PADDING * 2) / contentW;
-    const scaleY = (containerH - PADDING * 2) / contentH;
-    const newZoom = Math.min(Math.max(Math.min(scaleX, scaleY), 0.1), 1);
-    const contentCenterX = minX + (contentW / 2);
-    const contentCenterY = minY + (contentH / 2);
-    const newPanX = (containerW / 2) - (contentCenterX * newZoom);
-    const newPanY = (containerH / 2) - (contentCenterY * newZoom);
-    setZoom(newZoom); setPan({ x: newPanX, y: newPanY });
+    setPositions(prev => ({ ...prev, [id]: newPos }));
   };
 
   const handleCreateTable = async (name) => {
-    try { await api.sendDDL({ action: 'create_table', table_name: name.toLowerCase().replace(/\s+/g, '_') }); fetchSchema(); setIsModalOpen(false); } catch(e) { showError(e.message); }
+    try {
+      await api.sendDDL({ action: 'create_table', table_name: name.toLowerCase().replace(/\s+/g, '_') });
+      fetchSchema(); setIsModalOpen(false);
+    } catch(e) { setGlobalError(e.message); }
   };
 
   const handleChat = async () => {
@@ -639,6 +381,7 @@ export default function App() {
     setMessages(p=>[...p, userMsg]); setInput(''); setIsProcessing(true);
     try {
       const res = await api.chat(userMsg.content);
+      // Backend returns data in different formats (Array for rows, Object for status messages)
       setMessages(p=>[...p, { id: Date.now()+1, role: 'system', content: res.response, sql: res.sql, data: res.data }]);
     } catch(e) { setMessages(p=>[...p, { id: Date.now()+1, role: 'system', content: `ERROR: ${e.message}` }]); } 
     finally { setIsProcessing(false); }
@@ -647,6 +390,7 @@ export default function App() {
   return (
     <div className="flex w-full h-screen bg-[#383838] text-white font-sans overflow-hidden">
       <TableExplorer schema={schema} onRefresh={fetchSchema} />
+      
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
         <header className="h-16 shrink-0 border-b border-white/20 bg-black flex items-center justify-between px-6 z-20 shadow-md">
           <div className="flex flex-col">
@@ -655,58 +399,41 @@ export default function App() {
               <span className={`text-[10px] border px-1.5 py-0.5 font-mono ${globalError ? 'bg-red-600 border-white' : 'border-white/30 text-neutral-400'}`}>{globalError?'OFFLINE':'ONLINE'}</span>
             </h1>
           </div>
-          {activeTab === 'schema' && linkingState && (
-              <div className="text-xs text-cyan-400 font-mono animate-pulse border border-cyan-500/50 px-3 py-1 rounded-full bg-cyan-900/20">
-                  LINKING: Select Target Column...
-              </div>
-          )}
           <div className="flex border border-white/20 p-1 gap-1 bg-black">
             <button onClick={()=>setActiveTab('schema')} className={`flex items-center gap-2 px-4 py-1.5 text-xs font-bold uppercase tracking-wider transition-all ${activeTab==='schema'?'bg-white text-black':'text-neutral-500 hover:text-white'}`}><LayoutGrid className="w-3 h-3"/> Design</button>
             <button onClick={()=>setActiveTab('agent')} className={`flex items-center gap-2 px-4 py-1.5 text-xs font-bold uppercase tracking-wider transition-all ${activeTab==='agent'?'bg-white text-black':'text-neutral-500 hover:text-white'}`}><MessageSquare className="w-3 h-3"/> Agent</button>
           </div>
         </header>
-        {globalError && <div className="bg-white text-black p-2 text-center text-xs font-bold flex justify-center items-center gap-2 uppercase tracking-widest border-b-4 border-black animate-in fade-in slide-in-from-top-2"><AlertCircle className="w-4 h-4" />{globalError}</div>}
+
+        {globalError && <div className="bg-white text-black p-2 text-center text-xs font-bold flex justify-center items-center gap-2 uppercase tracking-widest border-b-4 border-black"><AlertCircle className="w-4 h-4" />{globalError}</div>}
+
         <main className="flex-1 overflow-hidden relative w-full bg-[#383838]">
           {activeTab === 'schema' && (
-            <div ref={containerRef} className={`relative w-full h-full overflow-hidden bg-[radial-gradient(#4a4a4a_1px,transparent_1px)] [background-size:20px_20px] ${isPanning ? 'cursor-grabbing' : 'cursor-default'}`} onWheel={handleWheel} onMouseDown={handleCanvasMouseDown}>
-              <div className="absolute top-6 right-6 z-30 flex gap-4" onMouseDown={e => e.stopPropagation()}>
-                <div className="flex border border-white/20 bg-black">
-                  <button onClick={() => setZoom(z => Math.max(z - 0.1, 0.1))} className="p-3 hover:bg-white/10 text-white"><ZoomOut className="w-4 h-4"/></button>
-                  <button onClick={handleFitToScreen} className="p-3 hover:bg-white/10 text-white border-x border-white/20"><Maximize className="w-4 h-4"/></button>
-                  <button onClick={() => setZoom(z => Math.min(z + 0.1, 2))} className="p-3 hover:bg-white/10 text-white"><ZoomIn className="w-4 h-4"/></button>
-                </div>
-                <button onClick={()=>setIsModalOpen(true)} className="bg-white hover:bg-neutral-200 text-black px-5 py-3 flex items-center gap-2 font-bold uppercase text-xs tracking-widest shadow-xl"><Plus className="w-4 h-4" /> New Table</button>
+            <div className="relative w-full h-full overflow-hidden bg-[radial-gradient(#4a4a4a_1px,transparent_1px)] [background-size:20px_20px]">
+              <div className="absolute top-6 right-6 z-30">
+                <button onClick={()=>setIsModalOpen(true)} className="bg-white hover:bg-neutral-200 text-black px-5 py-3 flex items-center gap-2 font-bold uppercase text-xs tracking-widest shadow-xl">
+                  <Plus className="w-4 h-4" /> New Table
+                </button>
               </div>
-              <div className="origin-top-left transition-transform duration-75 ease-linear w-full h-full" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
-                <div className="absolute inset-0 w-[10000px] h-[10000px]">
-                  <ConnectionsLayer 
-                    schema={schema} 
-                    positions={positions} 
-                    requestConfirm={requestConfirm} 
-                    onDeleteConnection={handleDeleteConnection} 
-                    onConnectionClick={handleConnectionClick} 
-                  />
-                  {schema.map(table => (
-                     positions[table.id] && (
-                      <SchemaNode 
-                        key={table.id} 
-                        table={table} 
-                        position={positions[table.id]} 
-                        zoom={zoom} 
-                        onMove={handleMoveNode} 
-                        onRefresh={fetchSchema} 
-                        onError={showError} 
-                        onStartLinking={handleStartLinking} 
-                        linkingState={linkingState} 
-                        requestConfirm={requestConfirm} 
-                        isHighlighted={highlightedTableIds.includes(table.id)}
-                      />
-                     )
-                  ))}
-                </div>
+              
+              <div className="absolute inset-0 w-[2000px] h-[2000px]">
+                <ConnectionsLayer schema={schema} positions={positions} />
+                {schema.map(table => (
+                   positions[table.id] && (
+                    <SchemaNode 
+                      key={table.id} 
+                      table={table} 
+                      position={positions[table.id]}
+                      onMove={handleMoveNode}
+                      onRefresh={fetchSchema}
+                      onError={setGlobalError}
+                    />
+                   )
+                ))}
               </div>
             </div>
           )}
+
           {activeTab === 'agent' && (
              <div className="h-full w-full flex flex-col max-w-5xl mx-auto bg-[#383838] border-x border-white/5">
                 <div className="flex-1 overflow-y-auto p-8 scrollbar-hide">
@@ -715,9 +442,40 @@ export default function App() {
                       <div className={`max-w-[85%] p-5 shadow-lg ${msg.role==='user'?'bg-white text-black':'bg-black border border-white/20 text-white'}`}>
                          <div className="text-xs font-black uppercase tracking-widest mb-2 opacity-50">{msg.role==='user'?'You':'Agent'}</div>
                          <div className="text-sm font-mono whitespace-pre-wrap">{msg.content}</div>
-                         {msg.sql && (<div className="mt-4 border border-white/20 bg-[#383838]"><div className="bg-black/50 px-3 py-1 text-[10px] text-neutral-300 font-bold uppercase border-b border-white/10">SQL</div><pre className="p-4 text-xs font-mono overflow-x-auto">{msg.sql}</pre></div>)}
-                         {msg.data && Array.isArray(msg.data) && msg.data.length > 0 && (<div className="mt-4 border border-white/20"><div className="bg-black/50 px-3 py-1 text-[10px] text-neutral-300 font-bold uppercase border-b border-white/10">Result</div><div className="overflow-x-auto bg-black"><table className="w-full text-xs text-left font-mono"><thead className="bg-[#383838] text-white border-b border-white/20"><tr>{Object.keys(msg.data[0]||{}).map(k=><th key={k} className="px-4 py-3 border-r border-white/10 whitespace-nowrap">{k}</th>)}</tr></thead><tbody>{msg.data.map((r,j)=><tr key={j} className="border-b border-white/10 hover:bg-white/5">{Object.values(r).map((v,k)=><td key={k} className="px-4 py-2 text-neutral-300 border-r border-white/10 whitespace-nowrap">{String(v)}</td>)}</tr>)}</tbody></table></div></div>)}
-                         {msg.data && !Array.isArray(msg.data) && (<div className="mt-4 border border-white/20 bg-neutral-900/50 p-3 text-xs text-neutral-300 font-mono">{JSON.stringify(msg.data, null, 2)}</div>)}
+                         
+                         {msg.sql && (
+                           <div className="mt-4 border border-white/20 bg-[#383838]">
+                             <div className="bg-black/50 px-3 py-1 text-[10px] text-neutral-300 font-bold uppercase border-b border-white/10">SQL</div>
+                             <pre className="p-4 text-xs font-mono overflow-x-auto">{msg.sql}</pre>
+                           </div>
+                         )}
+
+                         {msg.data && Array.isArray(msg.data) && msg.data.length > 0 && (
+                           <div className="mt-4 border border-white/20">
+                             <div className="bg-black/50 px-3 py-1 text-[10px] text-neutral-300 font-bold uppercase border-b border-white/10">Result</div>
+                             <div className="overflow-x-auto bg-black">
+                               <table className="w-full text-xs text-left font-mono">
+                                 <thead className="bg-[#383838] text-white border-b border-white/20">
+                                   <tr>{Object.keys(msg.data[0]||{}).map(k=><th key={k} className="px-4 py-3 border-r border-white/10 whitespace-nowrap">{k}</th>)}</tr>
+                                 </thead>
+                                 <tbody>
+                                   {msg.data.map((r,j)=>
+                                     <tr key={j} className="border-b border-white/10 hover:bg-white/5">
+                                       {Object.values(r).map((v,k)=><td key={k} className="px-4 py-2 text-neutral-300 border-r border-white/10 whitespace-nowrap">{String(v)}</td>)}
+                                     </tr>
+                                   )}
+                                 </tbody>
+                               </table>
+                             </div>
+                           </div>
+                         )}
+
+                         {msg.data && !Array.isArray(msg.data) && (
+                            <div className="mt-4 border border-white/20 bg-neutral-900/50 p-3 text-xs text-neutral-300 font-mono">
+                               {JSON.stringify(msg.data, null, 2)}
+                            </div>
+                         )}
+
                       </div>
                     </div>
                   ))}
@@ -742,7 +500,6 @@ export default function App() {
              </div>
           )}
         </main>
-        <ConfirmModal isOpen={confirmState.isOpen} message={confirmState.message} onConfirm={confirmState.onConfirm} onCancel={() => setConfirmState({ isOpen: false, message: '', onConfirm: null })} />
         <CreateTableModal isOpen={isModalOpen} onClose={()=>setIsModalOpen(false)} onSubmit={handleCreateTable} />
       </div>
     </div>
