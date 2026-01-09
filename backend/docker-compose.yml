@@ -11,5 +11,5 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - "D:/GlobalStoragePro/MiniProject/database_data:/var/lib/postgresql/data"
+      - "/home/rahul/GlobalStorage_Programming/MiniProject/Pg_data"
 

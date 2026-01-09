@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   Database, Plus, Trash2, Play, Terminal, Table as TableIcon, 
   RefreshCw, Cpu, AlertCircle, ChevronRight, ChevronDown, 
   LayoutGrid, MessageSquare, X, GripHorizontal, Link as LinkIcon,
-  ZoomIn, ZoomOut, Maximize, Move, Pencil, Check, Unlink, AlertTriangle
+  ZoomIn, ZoomOut, Maximize, Move, Pencil, Check, Unlink, AlertTriangle,
+  Mic, MicOff, LayoutTemplate
 } from 'lucide-react';
 
 // --- API CONFIGURATION ---
@@ -43,6 +44,10 @@ const CARD_WIDTH = 288;
 const HEADER_HEIGHT = 56; 
 const ROW_HEIGHT = 40; 
 const FOOTER_HEIGHT = 42; 
+const GRID_GAP_X = 50;
+const GRID_GAP_Y = 50;
+const START_X = 50;
+const START_Y = 50;
 
 const getCardHeight = (table) => {
   const rowsHeight = table.columns.length * ROW_HEIGHT;
@@ -51,7 +56,6 @@ const getCardHeight = (table) => {
 
 // --- COMPONENTS ---
 
-// 1. Confirmation Modal
 const ConfirmModal = ({ isOpen, message, onConfirm, onCancel }) => {
   if (!isOpen) return null;
   
@@ -75,7 +79,7 @@ const ConfirmModal = ({ isOpen, message, onConfirm, onCancel }) => {
   );
 };
 
-const TableExplorer = ({ schema, onRefresh }) => {
+const TableExplorer = React.memo(({ schema, onRefresh }) => {
   const [expandedTables, setExpandedTables] = useState({});
   const toggleTable = (tableName) => {
     setExpandedTables(prev => ({...prev, [tableName]: !prev[tableName]}));
@@ -117,9 +121,10 @@ const TableExplorer = ({ schema, onRefresh }) => {
       </div>
     </aside>
   );
-};
+});
 
-const SchemaNode = ({ 
+// MEMOIZED SCHEMA NODE FOR PERFORMANCE
+const SchemaNode = React.memo(({ 
     table, position, zoom, 
     onMove, onRefresh, onError, 
     onStartLinking, linkingState,
@@ -136,25 +141,42 @@ const SchemaNode = ({
   const [tempColName, setTempColName] = useState('');
   const [tempColType, setTempColType] = useState('');
 
+  // Use refs for drag calculation to avoid closure staleness during rapid events
+  const dragRef = useRef({ startX: 0, startY: 0, nodeStartX: 0, nodeStartY: 0 });
+  const animationFrameRef = useRef(null);
+
   const stopProp = (e) => e.stopPropagation();
 
   const handleMouseDown = (e) => {
     e.preventDefault();
     e.stopPropagation(); 
-    const startMouseX = e.clientX;
-    const startMouseY = e.clientY;
-    const startNodeX = position.x;
-    const startNodeY = position.y;
+    
+    dragRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        nodeStartX: position.x,
+        nodeStartY: position.y
+    };
     
     const handleMouseMove = (moveEvent) => {
-      const deltaX = (moveEvent.clientX - startMouseX) / zoom;
-      const deltaY = (moveEvent.clientY - startMouseY) / zoom;
-      onMove(table.id, { x: startNodeX + deltaX, y: startNodeY + deltaY });
+        if (animationFrameRef.current) return; // Throttle to frame rate
+
+        animationFrameRef.current = requestAnimationFrame(() => {
+            const deltaX = (moveEvent.clientX - dragRef.current.startX) / zoom;
+            const deltaY = (moveEvent.clientY - dragRef.current.startY) / zoom;
+            onMove(table.id, { 
+                x: dragRef.current.nodeStartX + deltaX, 
+                y: dragRef.current.nodeStartY + deltaY 
+            });
+            animationFrameRef.current = null;
+        });
     };
     
     const handleMouseUp = () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
     };
     
     document.addEventListener('mousemove', handleMouseMove);
@@ -208,12 +230,11 @@ const SchemaNode = ({
       onMouseDown={stopProp} 
       style={{ transform: `translate(${position.x}px, ${position.y}px)`, position: 'absolute', width: CARD_WIDTH, height: getCardHeight(table) }}
       className={`
-        flex flex-col shadow-2xl z-10 transition-all duration-300
+        flex flex-col shadow-2xl z-10 transition-all duration-75 ease-linear will-change-transform
         ${isBusy ? 'border-white animate-pulse' : 'border-white/20'}
         ${isHighlighted ? 'border-2 border-white shadow-[0_0_20px_rgba(255,255,255,0.3)] bg-neutral-900' : 'bg-black border hover:shadow-white/5'}
       `}
     >
-      {/* Header */}
       <div className={`p-3 border-b flex justify-between items-center group h-[56px] ${isHighlighted ? 'bg-white/10 border-white/30' : 'bg-neutral-900/80 border-white/10'}`}>
         <div className="flex items-center gap-2 flex-1">
           <div onMouseDown={handleMouseDown} className="cursor-grab active:cursor-grabbing p-1 hover:bg-white/10 rounded transition-colors" title="Drag to move">
@@ -286,9 +307,18 @@ const SchemaNode = ({
       )}
     </div>
   );
-};
+}, (prev, next) => {
+    // Only re-render if essential props change
+    return prev.table === next.table && 
+           prev.position.x === next.position.x && 
+           prev.position.y === next.position.y &&
+           prev.zoom === next.zoom && 
+           prev.linkingState === next.linkingState &&
+           prev.isHighlighted === next.isHighlighted;
+});
 
-const ConnectionsLayer = ({ schema, positions, requestConfirm, onDeleteConnection, onConnectionClick }) => {
+// MEMOIZED CONNECTIONS LAYER
+const ConnectionsLayer = React.memo(({ schema, positions, requestConfirm, onDeleteConnection, onConnectionClick }) => {
   const handleDeleteClick = (tableName, constraintName) => {
       requestConfirm(`Remove relationship? This drops constraint '${constraintName}'.`, () => {
           onDeleteConnection(tableName, constraintName);
@@ -372,7 +402,7 @@ const ConnectionsLayer = ({ schema, positions, requestConfirm, onDeleteConnectio
       )}
     </svg>
   );
-};
+});
 
 const CreateTableModal = ({ isOpen, onClose, onSubmit }) => {
   const [tableName, setTableName] = useState('');
@@ -416,14 +446,16 @@ export default function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [confirmState, setConfirmState] = useState({ isOpen: false, message: '', onConfirm: null });
   const [linkingState, setLinkingState] = useState(null);
-  const [highlightedTableIds, setHighlightedTableIds] = useState([]); // TRACK HIGHLIGHTS
-
+  const [highlightedTableIds, setHighlightedTableIds] = useState([]); 
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef(null);
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
     const saved = localStorage.getItem('db_positions');
     if (saved) setPositions(JSON.parse(saved));
     fetchSchema();
+    return () => { if (recognitionRef.current) recognitionRef.current.stop(); };
   }, []);
 
   useEffect(() => {
@@ -432,44 +464,114 @@ export default function App() {
     }
   }, [positions]);
 
-  const showError = (msg) => {
+  const showError = useCallback((msg) => {
       setGlobalError(msg);
       setTimeout(() => { setGlobalError(prev => (prev === msg ? null : prev)); }, 15000);
+  }, []);
+
+  // --- MASONRY LAYOUT & COLLISION AVOIDANCE ---
+  
+  const applyAutoLayout = (currentSchema = schema) => {
+    const COLUMNS = 3;
+    const colHeights = new Array(COLUMNS).fill(START_Y);
+    const newPositions = {};
+
+    currentSchema.forEach(table => {
+       const minColIndex = colHeights.indexOf(Math.min(...colHeights));
+       const x = START_X + (minColIndex * (CARD_WIDTH + GRID_GAP_X));
+       const y = colHeights[minColIndex];
+       newPositions[table.id] = { x, y };
+       colHeights[minColIndex] += getCardHeight(table) + GRID_GAP_Y;
+    });
+    
+    setPositions(newPositions);
+    handleFitToScreen();
   };
 
-  const fetchSchema = async () => {
+  const findSafePosition = (existingPositions, table) => {
+     let x = START_X;
+     let y = START_Y;
+     let attempts = 0;
+     const MAX_ATTEMPTS = 100;
+     const GRID_W = CARD_WIDTH + GRID_GAP_X;
+     const GRID_H = 100; 
+     
+     while (attempts < MAX_ATTEMPTS) {
+        const testRect = { x, y, w: CARD_WIDTH, h: getCardHeight(table) };
+        let collision = false;
+        
+        for (const pid in existingPositions) {
+           const pos = existingPositions[pid];
+           if (
+              testRect.x < pos.x + CARD_WIDTH + 20 &&
+              testRect.x + testRect.w + 20 > pos.x &&
+              testRect.y < pos.y + 300 && 
+              testRect.y + testRect.h + 20 > pos.y
+           ) {
+              collision = true;
+              break;
+           }
+        }
+        
+        if (!collision) return { x, y };
+        
+        x += GRID_W;
+        if (x > 1500) { 
+            x = START_X;
+            y += GRID_H;
+        }
+        attempts++;
+     }
+     return { x: START_X, y: START_Y }; 
+  };
+
+  const fetchSchema = useCallback(async () => {
     try {
       const data = await api.getSchema();
       setSchema(data);
       setGlobalError(null);
+      
       setPositions(prev => {
+        if (Object.keys(prev).length === 0 && data.length > 0) {
+            const COLUMNS = 4;
+            const colHeights = new Array(COLUMNS).fill(START_Y);
+            const initialPositions = {};
+            data.forEach(table => {
+                const minColIndex = colHeights.indexOf(Math.min(...colHeights));
+                const x = START_X + (minColIndex * (CARD_WIDTH + GRID_GAP_X));
+                const y = colHeights[minColIndex];
+                initialPositions[table.id] = { x, y };
+                colHeights[minColIndex] += getCardHeight(table) + GRID_GAP_Y;
+            });
+            return initialPositions;
+        }
+
         const newPositions = { ...prev };
-        let placedCount = Object.keys(prev).length; 
-        if (Object.keys(prev).length === 0) placedCount = 0;
-        data.forEach((table) => {
-          if (!newPositions[table.id]) {
-            const COLUMNS = 4; 
-            const col = placedCount % COLUMNS;
-            const row = Math.floor(placedCount / COLUMNS);
-            newPositions[table.id] = { x: 50 + (col * 320), y: 50 + (row * 300) };
-            placedCount++;
-          }
+        let hasChanges = false;
+        
+        data.forEach(table => {
+            if (!newPositions[table.id]) {
+                const safePos = findSafePosition(newPositions, table);
+                newPositions[table.id] = safePos;
+                hasChanges = true;
+            }
         });
-        return newPositions;
+        
+        return hasChanges ? newPositions : prev;
       });
     } catch (e) { showError(`CONNECTION ERROR: ${e.message}`); }
-  };
+  }, [showError]);
 
-  const requestConfirm = (message, onConfirmAction) => {
+  const requestConfirm = useCallback((message, onConfirmAction) => {
       setConfirmState({ isOpen: true, message, onConfirm: () => { onConfirmAction(); setConfirmState({ isOpen: false, message: '', onConfirm: null }); } });
-  };
+  }, []);
 
-  const handleStartLinking = (table, col) => {
+  const handleStartLinking = useCallback((table, col) => {
       if (linkingState) {
           if (linkingState.sourceTable === table && linkingState.sourceCol === col) { setLinkingState(null); } 
           else { handleCreateConnection(linkingState.sourceTable, linkingState.sourceCol, table, col); setLinkingState(null); }
       } else { setLinkingState({ sourceTable: table, sourceCol: col }); }
-  };
+  }, [linkingState]);
 
   const handleCreateConnection = (sourceTable, sourceCol, targetTable, targetCol) => {
       requestConfirm(`Link ${sourceTable}.${sourceCol} -> ${targetTable}.${targetCol}?`, async () => {
@@ -478,13 +580,13 @@ export default function App() {
       });
   };
 
-  const handleDeleteConnection = async (tableName, constraintName) => {
+  const handleDeleteConnection = useCallback(async (tableName, constraintName) => {
       try { await api.sendDDL({ action: 'drop_foreign_key', table_name: tableName, constraint_name: constraintName }); fetchSchema(); } catch(e) { showError(e.message); }
-  };
+  }, [fetchSchema, showError]);
 
-  const handleConnectionClick = (sourceId, targetId) => {
+  const handleConnectionClick = useCallback((sourceId, targetId) => {
       setHighlightedTableIds([sourceId, targetId]);
-  };
+  }, []);
 
   const handleWheel = (e) => {
     if (activeTab !== 'schema') return;
@@ -505,7 +607,7 @@ export default function App() {
   const handleCanvasMouseDown = (e) => {
     if (activeTab !== 'schema') return;
     setLinkingState(null);
-    setHighlightedTableIds([]); // Clear highlights on canvas click
+    setHighlightedTableIds([]); 
     const startX = e.clientX;
     const startY = e.clientY;
     const startPanX = pan.x;
@@ -525,25 +627,11 @@ export default function App() {
     document.addEventListener('mouseup', onMouseUp);
   };
 
-  const checkCollision = (id, newX, newY) => {
-    const movingTable = schema.find(t => t.id === id);
-    if (!movingTable) return false;
-    const movingRect = { x: newX, y: newY, w: CARD_WIDTH, h: getCardHeight(movingTable) };
-    for (const table of schema) {
-      if (table.id === id) continue;
-      const pos = positions[table.id];
-      if (!pos) continue;
-      const otherRect = { x: pos.x, y: pos.y, w: CARD_WIDTH, h: getCardHeight(table) };
-      const margin = 10; 
-      const isOverlapping = movingRect.x < otherRect.x + otherRect.w + margin && movingRect.x + movingRect.w + margin > otherRect.x && movingRect.y < otherRect.y + otherRect.h + margin && movingRect.y + movingRect.h + margin > otherRect.y;
-      if (isOverlapping) return true; 
-    }
-    return false;
-  };
-
-  const handleMoveNode = (id, newPos) => {
-    if (!checkCollision(id, newPos.x, newPos.y)) { setPositions(prev => ({ ...prev, [id]: newPos })); }
-  };
+  // --- OPTIMIZED MOVE HANDLER ---
+  const handleMoveNode = useCallback((id, newPos) => {
+    // Direct state update - removed the heavy collision check from the critical rendering path
+    setPositions(prev => ({ ...prev, [id]: newPos }));
+  }, []);
 
   const handleFitToScreen = () => {
     if (!containerRef.current || schema.length === 0) { setZoom(1); setPan({x: 0, y: 0}); return; }
@@ -586,6 +674,46 @@ export default function App() {
     } catch(e) { setMessages(p=>[...p, { id: Date.now()+1, role: 'system', content: `ERROR: ${e.message}` }]); } 
     finally { setIsProcessing(false); }
   };
+  
+  const toggleVoice = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+    } else {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        showError("Browser doesn't support Speech Recognition. Use Chrome/Edge/Safari.");
+        return;
+      }
+      
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => {
+        setIsListening(true);
+      };
+
+      recognition.onresult = (event) => {
+        const transcript = Array.from(event.results)
+          .map(result => result[0].transcript)
+          .join('');
+        setInput(transcript);
+      };
+
+      recognition.onerror = (event) => {
+        setIsListening(false);
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    }
+  };
 
   return (
     <div className="flex w-full h-screen bg-[#383838] text-white font-sans overflow-hidden">
@@ -618,6 +746,8 @@ export default function App() {
                   <button onClick={handleFitToScreen} className="p-3 hover:bg-white/10 text-white border-x border-white/20"><Maximize className="w-4 h-4"/></button>
                   <button onClick={() => setZoom(z => Math.min(z + 0.1, 2))} className="p-3 hover:bg-white/10 text-white"><ZoomIn className="w-4 h-4"/></button>
                 </div>
+                 {/* Auto Layout Button */}
+                <button onClick={() => applyAutoLayout()} className="bg-black border border-white/20 text-white hover:bg-white hover:text-black px-4 py-3 flex items-center gap-2 font-bold uppercase text-xs tracking-widest transition-colors"><LayoutTemplate className="w-4 h-4" /> Auto Layout</button>
                 <button onClick={()=>setIsModalOpen(true)} className="bg-white hover:bg-neutral-200 text-black px-5 py-3 flex items-center gap-2 font-bold uppercase text-xs tracking-widest shadow-xl"><Plus className="w-4 h-4" /> New Table</button>
               </div>
               <div className="origin-top-left transition-transform duration-75 ease-linear w-full h-full" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
@@ -669,9 +799,20 @@ export default function App() {
                 <div className="p-6 border-t border-white/20 bg-black z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
                    <div className="relative group">
                      <Terminal className="absolute top-4 left-4 h-5 w-5 text-neutral-500" />
-                     <input type="text" className="block w-full pl-12 pr-14 py-4 bg-black border border-white/30 text-white focus:border-white outline-none font-mono text-sm" placeholder="QUERY DATABASE..." value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleChat()} />
-                     <button onClick={handleChat} disabled={isProcessing} className="absolute top-2 right-2 px-4 py-2 bg-white text-black flex items-center justify-center"><Play className="w-4 h-4 fill-current" /></button>
+                     <input type="text" className="block w-full pl-12 pr-28 py-4 bg-black border border-white/30 text-white focus:border-white outline-none font-mono text-sm" placeholder="QUERY DATABASE..." value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleChat()} />
+                     <div className="absolute top-2 right-2 flex gap-1">
+                        <button 
+                            onClick={toggleVoice} 
+                            className={`w-10 h-10 flex items-center justify-center transition-all duration-300 ${isListening ? 'bg-red-600 text-white animate-pulse shadow-[0_0_15px_rgba(220,38,38,0.7)]' : 'bg-neutral-800 text-neutral-400 hover:text-white hover:bg-neutral-700'}`}
+                        >
+                            {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                        </button>
+                        <button onClick={handleChat} disabled={isProcessing} className="w-10 h-10 bg-white text-black flex items-center justify-center hover:bg-neutral-200 transition-colors">
+                            <Play className="w-4 h-4 fill-current" />
+                        </button>
+                     </div>
                    </div>
+                   {isListening && <div className="mt-2 text-[10px] text-red-500 font-mono uppercase tracking-widest animate-pulse flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-red-500"></div> Live Listening...</div>}
                 </div>
              </div>
           )}
